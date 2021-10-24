@@ -1,5 +1,4 @@
 
-import sys
 import argparse
 import subprocess
 import platform
@@ -27,6 +26,7 @@ def create_remote_dir(slaves, dir_name):
     for p, s in zip(proc_list, slaves):
         out , err = p.communicate()
         if p.returncode:
+            print(slaves)
             raise RuntimeError("'{} '{} error '{} to create dir: '{}".format(out, err, p.returncode, s))
 
 def deploy(slaves_file, dir):
@@ -38,7 +38,7 @@ def deploy(slaves_file, dir):
     for p, s in zip(proc_list, slaves_file):
         out , err = p.communicate()
         if p.returncode:
-            raise RuntimeError("'{} '{} error '{} unable to deploy on: '{}".format(out, err, p.returncode, s_f[0]))
+            raise RuntimeError("{} {} error {} unable to deploy on: {}".format(out, err, p.returncode, s_f[0]))
 
 
 def map(input_file, output_file):
@@ -60,22 +60,33 @@ def shuffle(input_file):
     in_f = open(work_dir_path+"maps/"+input_file, 'r')
     m_f = open("/tmp/vsoking-20/machines.txt")
     m_list = m_f.read().split(" ")
-    #host_id = m_list.index("vsoking-20@"+host_name)
-    hash_files_dict = {}
-    slaves_files_list = []    
+    host_id = m_list.index("vsoking-20@"+host_name)
+    hash_files_dict = {} #{k:[] for k in m_list}
+    mask = 0
+    
+    #slaves_files_list = []
     for line in in_f:
         s = bytes(line.split(" ")[0], "utf-8")
-        hash_ = int.from_bytes(hashlib.md5(s).digest(), 'big')
-        out_file_name = str(hash_) +'-'+host_name + ".txt"
-        hash_files_dict[hash_] = out_file_name
+        hash_ = int.from_bytes(hashlib.md5(s).digest()[:4], 'big')
+        
+        dest = hash_ % len(m_list)
+        out_file_name = str(hash_) +'-'+host_name +"-"+str(dest)+".txt"
+        mask |= 1 << dest
         with open(shuffle_dir+"/"+out_file_name, "a+") as f:
             f.writelines(line)
-    for h, f in hash_files_dict.items():
-        dest = h % len(m_list)
-        #if dest != host_id:
-        slaves_files_list.append( (m_list[dest], shuffle_dir+"/"+hash_files_dict[h]) )    
-    create_remote_dir([s[0] for s in slaves_files_list], work_dir_path+shuffle_received_dir_name)
-    deploy(slaves_files_list, work_dir_path+shuffle_received_dir_name)
+    proc_list = []
+    for i in range(len(m_list)):
+        if mask & (1<<i):
+            files_to_send = "/tmp/vsoking-20/shuffles/*-{}.txt".format(i)
+            remote_host = m_list[i]
+            cmd = "scp "+files_to_send+" "+remote_host+":"+work_dir_path+shuffle_received_dir_name
+            p = subprocess.Popen(cmd, shell=True ,stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+            proc_list.append(p)
+    for p in proc_list:
+        out , err = p.communicate()
+        if p.returncode:
+            raise RuntimeError("{} {} error {} unable to deploy ".format(out, err, p.returncode))               
+
     in_f.close()
     m_f.close()
 

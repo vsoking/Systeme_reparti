@@ -1,11 +1,11 @@
+from functools import reduce
+from io import SEEK_END, SEEK_SET
 import subprocess
-from sys import stderr, stdin
-from threading import Thread
 import warnings
 import time
 import ast
-import json
-machine_list = ["vsoking-20@tp-4b01-"+"%02d" % i for i in range(39,42)]
+import argparse
+machine_list = ["vsoking-20@tp-4b01-"+"%02d" % i for i in range(20,23)]
 #sleep_time_list = ["%02d" % 1 for i in range(39,42)]
 #timeout_list = [3 for i in range(39,41)]
 exec = "slave.py"
@@ -119,65 +119,69 @@ def clean(slaves):
 
 def main():
 
-    m = get_connected_slaves(machine_list)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input", help="input file")
+    args = parser.parse_args()
+    if args.input:
+        m = get_connected_slaves(machine_list)
 
-    create_dir(remote_dir_path, m)
-    split_dir = remote_dir_path+"/splits"
-    create_dir(split_dir, m)
-    #map_dir = remote_dir_path+"/maps"
-    #create_dir(map_dir, m)
+        start_time = time.perf_counter()
+        create_dir(remote_dir_path, m)
+        split_dir = remote_dir_path+"/splits"
+        create_dir(split_dir, m)
 
-    d_list = [(s, "slave.py") for s in m]
-    deploy(d_list, remote_dir_path)
-    
-    
+        d_list = [(s, "slave.py") for s in m]
+        deploy(d_list, remote_dir_path)
+        
+        #create list of all files name
+        file_list = ["S{}.txt".format(i) for i in range(len(m))]
 
-    #create files
-    s0 = open("S0.txt",'w')
-    for i in range(10):
-        s0.write("Deer Beer River")
-    
-    s1 = open("S1.txt",'w')
-    for i in range(1):
-        s1.write("Car Car River")
-    
-    s2 = open("S2.txt", 'w')
-    for i in range(1):
-        s2.write("Deer Car Beer")
+        
+        in_f = open(args.input, 'r')
+        in_f.seek(0, SEEK_END)
+        split_size = (in_f.tell() // len(m)) + 1
+        in_f.seek(0, SEEK_SET)
+        for f in file_list:
+            split = open(f, "w")
+            split.write(in_f.read(split_size))
+            split.close()
+        in_f.close()
 
-    s0.close()
-    s1.close()
-    s2.close()
+        #create list of (slave_name, file_to_deploy, directory where file will be deploy)
+        
+        d_list = [(s, f) for s, f  in zip(m, file_list)]
 
-    #create list of all files name
-    file_list = ["S{}.txt".format(i) for i in range(0,3)]
+        #copy files to remote machine
+        deploy(d_list, split_dir)
 
-    #create list of (slave_name, file_to_deploy, directory where file will be deploy)
-    
-    d_list = [(s, f) for s, f  in zip(m, file_list)]
+        
+        execute_map(d_list)
+        map_duration = time.perf_counter() - start_time
+        print("MAP FINISHED... {:.2f} seconds".format(map_duration) )
 
-    #copy files to remote machine
-    deploy(d_list, split_dir)
+        m_file = open("machines.txt", 'w')
+        m_file.write(" ".join(m))
+        m_file.close()
 
-    start_time = time.perf_counter()
-    execute_map(d_list)
-    print("MAP FINISHED... {:.2f} seconds".format(time.perf_counter() - start_time) )
+        start_time = time.perf_counter()
+        deploy([(s, "machines.txt") for s in m], remote_dir_path)
+        create_dir("/tmp/vsoking-20/shufflesreceived", m)
+        execute_shuffle(d_list)
+        shuffle_duration = time.perf_counter() - start_time
+        print("SHUFFLE FINISHED... {:.2f} seconds".format(shuffle_duration))
 
-    m_file = open("machines.txt", 'w')
-    m_file.write(" ".join(m))
-    m_file.close()
+        start_time = time.perf_counter()
+        r = execute_reduce(m)
+        reduce_duration  = time.perf_counter() - start_time
+        print("REDUCE FINISHED... {:.2f} seconds".format(reduce_duration))
+        print("TOTAL DURATION: ", map_duration + shuffle_duration + reduce_duration)
+        r_file_name = args.input+"-wordcount-result.txt"
+        r_file = open(r_file_name, 'w')
+        r_file.write(str(r))
+        r_file.close()
+        print("RESULTS in file: {}".format(r_file_name))
 
-    start_time = time.perf_counter()
-    deploy([(s, "machines.txt") for s in m], remote_dir_path)
-    execute_shuffle(d_list)
-    print("SHUFFLE FINISHED... {:.2f} seconds".format(time.perf_counter() - start_time))
-
-    start_time = time.perf_counter()
-    r = execute_reduce(m)
-    print("REDUCE FINISHED... {:.2f} seconds".format(time.perf_counter() - start_time))
-    print("RESULTS: \n{}".format(r))
-
-    clean(m)
+        clean(m)
 
 
 if __name__ == "__main__":
