@@ -1,11 +1,14 @@
 
 import argparse
 import subprocess
-import platform
+from platform import node
 import hashlib
 import os
+from collections import defaultdict
+import json
+import sys
 
-host_name = platform.node()
+host_name = node()
 shuffle_received_dir_name = "shufflesreceived"
 work_dir_path = "/tmp/vsoking-20/"
 map_dir_name = "maps"
@@ -61,23 +64,27 @@ def shuffle(input_file):
     m_f = open("/tmp/vsoking-20/machines.txt")
     m_list = m_f.read().split(" ")
     host_id = m_list.index("vsoking-20@"+host_name)
-    hash_files_dict = {} #{k:[] for k in m_list}
+    hash_files_dict = {i: defaultdict(list) for i in m_list} #{k:[] for k in m_list}
     mask = 0
     
     #slaves_files_list = []
     for line in in_f:
         s = bytes(line.split(" ")[0], "utf-8")
-        hash_ = int.from_bytes(hashlib.md5(s).digest()[:4], 'big')
-        
+        hash_ = int.from_bytes(hashlib.md5(s).digest()[:4], 'big')        
         dest = hash_ % len(m_list)
-        out_file_name = str(hash_) +'-'+host_name +"-"+str(dest)+".txt"
+        #out_file_name = str(hash_) +'-'+host_name +"-"+str(dest)+".txt"
         mask |= 1 << dest
-        with open(shuffle_dir+"/"+out_file_name, "a+") as f:
-            f.writelines(line)
+        hash_files_dict[m_list[dest]][line.split()[0]].append(1)
+
+    for i in range(len(m_list)):
+        if mask & (1<<i):
+            with open(shuffle_dir+"/"+host_name+'_'+m_list[i], "w") as f:
+                #f.write(hash_files_dict[m_list[i]].getvalue())
+                json.dump(hash_files_dict[m_list[i]], f)
     proc_list = []
     for i in range(len(m_list)):
         if mask & (1<<i):
-            files_to_send = "/tmp/vsoking-20/shuffles/*-{}.txt".format(i)
+            files_to_send = "/tmp/vsoking-20/shuffles/*_{}".format(m_list[i])
             remote_host = m_list[i]
             cmd = "scp "+files_to_send+" "+remote_host+":"+work_dir_path+shuffle_received_dir_name
             p = subprocess.Popen(cmd, shell=True ,stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -91,23 +98,28 @@ def shuffle(input_file):
     m_f.close()
 
 def reduce():
-    count_dict = {}
+    count_dict = defaultdict(int)
     for shuffle_file_name in os.listdir(work_dir_path+shuffle_received_dir_name):
         reduce_file_name = shuffle_file_name.split('-')[0]
         with open(work_dir_path+shuffle_received_dir_name+"/"+shuffle_file_name, "r") as f:
-            lines_list = f.readlines()
-            key = lines_list[0].split(" ")[0]
-            if key in count_dict:
-                count_dict[key] += len(lines_list)
-            else:
-                count_dict[key] = len(lines_list)
+            d = json.load(f)
+            for w in d:
+                count_dict[w] += len(d[w])
+
+    reduce_dir_path = "/tmp/vsoking-20/reduces"
+    os.makedirs(reduce_dir_path, exist_ok=True)
+    out_f = open(reduce_dir_path+"/result-"+host_name+".txt", 'w')
+    json.dump(count_dict, out_f)
+    out_f.close()
+    """
     reduce_dir_path = "/tmp/vsoking-20/reduces"
     os.makedirs(reduce_dir_path, exist_ok=True)
     out_f = open(reduce_dir_path+"/result-"+host_name+".txt", 'w')
     for words_count in count_dict.items():
         out_f.write(words_count[0]+" "+str(words_count[1]) +'\n')
     out_f.close()
-    return count_dict
+    """
+    return json.dumps(count_dict)
 
         
 
@@ -115,21 +127,19 @@ def reduce():
 def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=False)
-    group.add_argument("-m", "--map", help="perfom map operation", action="store_true")
+    group.add_argument("-m", "--map", help="perfom map operation", nargs=2, action='store')
     group.add_argument("-r", "--reduce", help="perfom reduce operation", action="store_true")
-    parser.add_argument("-s", "--shuffle", help="perform shuffle operation", action="store_true")
-    parser.add_argument("input", help="input file")
-    parser.add_argument("output", help="output file")
+    group.add_argument("-s", "--shuffle", help="perform shuffle operation", action='store')
+    #parser.add_argument("input", help="input file")
+    #parser.add_argument("output", help="output file")
     args = parser.parse_args()
     if args.map:
-        map(args.input, args.output)
+        map(args.map[0], args.map[1])
     elif args.shuffle:
-        shuffle(args.input)
+        shuffle(args.shuffle)
     elif args.reduce:
-        #reduce()
-        isdir = os.path.isdir("/tmp/vsoking-20/shufflesreceived")
-        if isdir:
-            print(reduce())
+        if os.path.isdir("/tmp/vsoking-20/shufflesreceived"):
+            sys.stdout.write(reduce())
         else:
             pass
     else:

@@ -1,25 +1,18 @@
-from functools import reduce
 from io import SEEK_END, SEEK_SET
 import subprocess
 import warnings
 import time
-import ast
+import pandas as pd
+import json
 import argparse
-machine_list = ["vsoking-20@tp-4b01-"+"%02d" % i for i in range(20,23)]
-#sleep_time_list = ["%02d" % 1 for i in range(39,42)]
-#timeout_list = [3 for i in range(39,41)]
+
+machine_list = ["vsoking-20@tp-4b01-"+"%02d" % i for i in range(0,44)]
 exec = "slave.py"
 remote_dir_path = "/tmp/vsoking-20"
 process_list = []
 thread_list = []
 script_name = "/tmp/vsoking-20/slave.py" 
 
-
-def run_func(ps):
-    out, err = ps.communicate()
-    code = ps.returncode
-    print("out: ", out)
-    print("err:", err)
 
 def create_dir(dir_name, slaves):
     proc_list = []
@@ -44,8 +37,7 @@ def deploy(slaves_file, dir):
         if p.returncode:
             raise RuntimeError("'{} '{} error '{} unable to deploy on: '{}".format(out, err, p.returncode, s_f[0]))
 
-def execute_map(slaves_files):
-       
+def execute_map(slaves_files):       
     proc_list = []
     r = 0
     for s_f in slaves_files:
@@ -61,7 +53,7 @@ def execute_shuffle(slaves_files):
     proc_list = []
     r = 0
     for s_f in slaves_files:
-        cmd = "python3 {} -s {} {}".format(script_name, 'UM'+s_f[1][1:], 'To_avoid_err')
+        cmd = "python3 {} -s {}".format(script_name, 'UM'+s_f[1][1:])
         p = subprocess.Popen(['ssh',  s_f[0], cmd], stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         proc_list.append(p)
     for p, s in zip(proc_list, slaves_files):
@@ -73,7 +65,7 @@ def execute_reduce(slaves):
     proc_list = []
     r = {}
     for s in slaves:
-        cmd = "python3 {} -r {} {}".format(script_name, 'To_avoid_err', 'To_avoid_err')
+        cmd = "python3 {} -r ".format(script_name)
         p = subprocess.Popen(['ssh',  s, cmd], stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         proc_list.append(p)
     for p, s in zip(proc_list, slaves):
@@ -82,27 +74,24 @@ def execute_reduce(slaves):
         if p.returncode:
             raise RuntimeError("'{} '{} error '{} reduce error on: '{}".format(out, err, p.returncode, s))
         elif len(out):            
-            out = ast.literal_eval(out)
+            out = json.loads(out)
             r.update(out)
     return r
 
-
-
 def get_connected_slaves(slaves):
     proc_list = []
-    slaves_ok = []
+    slaves_ok = slaves
     for s in slaves:
         p = subprocess.Popen(['ssh', s, "hostname"], stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         proc_list.append(p)
 
     for s, p in zip(slaves, proc_list):
-        p.communicate()
-        if not p.returncode:
-            slaves_ok.append(s)
-    return slaves_ok
-
- 
-      
+        try:
+            p.communicate(timeout=4)
+        except subprocess.TimeoutExpired:
+            slaves_ok.remove(s)
+            pass
+    return slaves_ok      
 
 def clean(slaves):
     proc_list = []
@@ -121,11 +110,16 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("input", help="input file")
+    parser.add_argument("-m", "--workers", help="number of workers", type=int, default=3)
     args = parser.parse_args()
     if args.input:
         m = get_connected_slaves(machine_list)
+        if args.workers > len(m):
+            raise ValueError("only {} worker available".format(len(m)))
+        m = m[:args.workers]
 
-        start_time = time.perf_counter()
+        print("list of workers {}".format([i[-2:] for i in m]))
+        
         create_dir(remote_dir_path, m)
         split_dir = remote_dir_path+"/splits"
         create_dir(split_dir, m)
@@ -136,7 +130,7 @@ def main():
         #create list of all files name
         file_list = ["S{}.txt".format(i) for i in range(len(m))]
 
-        
+        start_time = time.perf_counter()
         in_f = open(args.input, 'r')
         in_f.seek(0, SEEK_END)
         split_size = (in_f.tell() // len(m)) + 1
@@ -172,38 +166,16 @@ def main():
 
         start_time = time.perf_counter()
         r = execute_reduce(m)
+        
         reduce_duration  = time.perf_counter() - start_time
         print("REDUCE FINISHED... {:.2f} seconds".format(reduce_duration))
         print("TOTAL DURATION: ", map_duration + shuffle_duration + reduce_duration)
-        r_file_name = args.input+"-wordcount-result.txt"
-        r_file = open(r_file_name, 'w')
-        r_file.write(str(r))
-        r_file.close()
+        r_file_name = "wordcount-"+args.input
+        pd.Series(r).to_csv(r_file_name, header=None)
         print("RESULTS in file: {}".format(r_file_name))
-
+        
         clean(m)
 
 
 if __name__ == "__main__":
     main()
-
-"""
-for machine, t in zip(machine_list, sleep_time_list):
-    proc = subprocess.Popen(['ssh', usr_hostname(machine), "python", remote_dir_path+exec, str(t) ], stdout=subprocess.PIPE, stdin=subprocess.PIPE)
-    thrd = Thread(target=run_func, args=(proc,), daemon=True)
-    thread_list.append(thrd)
-    process_list.append(proc)
-    thrd.start()
-
-
-for thrd, t , p in zip(thread_list, timeout_list, process_list):
-    thrd.join()
-    if thrd.is_alive():
-        print("Timeout... Killing the process")
-        p.kill()
-
-#clean
-for machine in machine_list:
-    subprocess.call(['ssh', usr_hostname(machine), "rm -rf ", remote_dir_path], stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-        
-"""
