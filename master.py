@@ -9,7 +9,7 @@ import argparse
 import threading
 import os
 
-machine_list = ["vsoking-20@tp-4b01-"+"%02d" % i for i in range(0,44)]
+machine_list = ["vsoking-20@tp-1a207-"+"%02d" % i for i in range(1,40)]
 exec = "slave.py"
 remote_dir_path = "/tmp/vsoking-20"
 process_list = []
@@ -24,10 +24,10 @@ def ping_slave(slave):
 class Slave:
     def __init__(self, name):
         self.name = name
-        self.is_alive = True
+        #self.is_alive = True
         self.phase = ''
         self.user = "vsoking-20"
-        threading.Thread(target=ping_slave, args=(self,))
+        #threading.Thread(target=ping_slave, args=(self,))
     
     def execute(self, cmd):
         return subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -52,11 +52,19 @@ def deploy(slaves_file, dir):
     r = 0
     for s_f in slaves_file:
         cmd = "scp {} {}".format(s_f[1], s_f[0].user+'@'+s_f[0].name+":"+dir)
-        proc_list.append(s_f[0].execute(cmd))
+        p = s_f[0].execute(cmd)
+        proc_list.append(p)
     for p, s in zip(proc_list, slaves_file):
+        #while s[0].is_alive:
+        #    try: 
         out , err = p.communicate()
         if p.returncode:
             raise RuntimeError("'{} '{} error '{} unable to deploy on: '{}".format(out, err, p.returncode, s_f[0].name))
+        #        break
+        #    except subprocess.TimeoutExpired:
+        #        pass
+        #else:
+        #    print("{} is not alive".format(s[0].name))
 
 def execute_map(slaves_files):       
     proc_list = []
@@ -66,20 +74,10 @@ def execute_map(slaves_files):
         p = s_f[0].execute(cmd)
         proc_list.append(p)
     for p, s in zip(proc_list, slaves_files):
-        while s[0].is_alive:
-            try:
-                out , err = p.communicate()
-                if p.returncode:
-                    raise RuntimeError("'{} '{} error '{} map error on: '{}".format(out, err, p.returncode, s[0].name))
-                else:
-                    s[0].phase = "map completed"
-                    r +=1
-                break
-            except subprocess.TimeoutExpired:
-                pass
-        else:
-            print("{} is not alive".format(s[0].name))
-    return r
+        out , err = p.communicate()
+        if p.returncode:
+            raise RuntimeError("'{} '{} error '{} map error on: '{}".format(out, err, p.returncode, s[0].name))
+
 
 def execute_shuffle(slaves_files):
     proc_list = []
@@ -89,38 +87,44 @@ def execute_shuffle(slaves_files):
         p = s_f[0].execute(cmd)
         proc_list.append(p)
     for p, s in zip(proc_list, slaves_files):
-        while s[0].is_alive:
-            try:
-                out , err = p.communicate()
-                if p.returncode:
-                    raise RuntimeError("'{} '{} error '{} shuffle error on: '{}".format(out, err, p.returncode, s[0].name))
-                else:
-                    s[0].phase = "shuffle completed"
-                    r +=1
-                break
-            except subprocess.TimeoutExpired:
-                pass
-        else:
-            print("{} is not alive".format(s[0].name))
-    return r
+        out , err = p.communicate()
+        if p.returncode:
+            raise RuntimeError("'{} '{} error '{} shuffle error on: '{}".format(out, err, p.returncode, s[0].name))
+                
 
 
 
 def execute_reduce(slaves):
     proc_list = []
-    r = {}
+
     for s in slaves:
         cmd = "ssh {} python3 {} -r ".format(s.user+'@'+s.name, script_name)
         p = s.execute(cmd)
         proc_list.append(p)
     for p, s in zip(proc_list, slaves):
         out , err = p.communicate()
-        out = out.decode("utf-8")
         if p.returncode:
             raise RuntimeError("'{} '{} error '{} reduce error on: '{}".format(out, err, p.returncode, s.name))
-        elif len(out):            
-            out = json.loads(out)
-            r.update(out)
+
+def get_result(slaves):
+    proc_list = []
+    r = {}
+    out_dir = "reduces"
+    os.makedirs(out_dir, exist_ok=True)
+    for s in slaves:
+        cmd = "scp {}:/tmp/vsoking-20/reduces/* {}/".format(s.user+'@'+s.name, out_dir)
+        p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc_list.append(p)
+    for p, s in zip(proc_list, slaves):
+        out, err = p.communicate()
+        if p.returncode:
+            raise RuntimeError("'{} '{} error '{} reduce error on: '{}".format(out, err, p.returncode, s.name))
+
+    for reduce_file in os.listdir(out_dir):
+        with open(out_dir+'/'+reduce_file, "r") as f:
+            d = json.load(f)
+            r.update(d)
+    subprocess.call(["rm", "-rf", out_dir])
     return r
 
 def get_connected_slaves(slaves):
@@ -157,28 +161,32 @@ def main():
     parser.add_argument("-m", "--workers", help="number of workers", type=int, default=3)
     args = parser.parse_args()
     if args.input:
-
+        start_time = time.perf_counter()        
         m = get_connected_slaves(machine_list)
+        check_connect_duration = time.perf_counter() - start_time
+        print("Checking connected slaves... {} seconds".format(check_connect_duration))
 
         if args.workers > len(m):
             raise ValueError("only {} worker available".format(len(m)))
         m = m[:args.workers]
         slave_list = [Slave(i.split("@")[1]) for i in m]
 
-        print("list of workers {}".format([s.name for s in slave_list]))
+        print("list of slaves {}".format([s.name for s in slave_list]))
         
+        start_time = time.perf_counter()  
         create_dir(remote_dir_path, slave_list)
         split_dir = remote_dir_path+"/splits"
         create_dir(split_dir, slave_list)
 
         d_list = [(s, "slave.py") for s in slave_list]
         deploy(d_list, remote_dir_path)
+
         
         #create list of all files name
-        file_list = ["S{}".format(i) for i in range(len(slave_list))]
+        file_list = ["S%02d"%i for i in range(len(slave_list))]
 
-        start_time = time.perf_counter()
-        subprocess.call("split -n l/{} -a 1 -d {} S".format(len(slave_list), args.input), shell=True)
+        
+        subprocess.call("split -n l/{} -a 2 -d {} S".format(len(slave_list), args.input), shell=True)
 
         #create list of (slave_name, file_to_deploy, directory where file will be deploy)
         
@@ -186,8 +194,10 @@ def main():
 
         #copy files to remote machine
         deploy(d_list, split_dir)
+        deploy_duration = time.perf_counter() - start_time
+        print("DEPLOY  SPLIT FINISHED... {} seconds".format(deploy_duration))
 
-        
+        start_time = time.perf_counter()
         execute_map(d_list)
         map_duration = time.perf_counter() - start_time
         print("MAP FINISHED... {:.2f} seconds".format(map_duration) )
@@ -196,21 +206,27 @@ def main():
         m_file.write(" ".join(m))
         m_file.close()
 
-        start_time = time.perf_counter()
+        
         deploy([(s, "machines.txt") for s in slave_list], remote_dir_path)
         create_dir("/tmp/vsoking-20/shufflesreceived", slave_list)
+        start_time = time.perf_counter()
         execute_shuffle(d_list)
         shuffle_duration = time.perf_counter() - start_time
         print("SHUFFLE FINISHED... {:.2f} seconds".format(shuffle_duration))
 
         start_time = time.perf_counter()
-        r = execute_reduce(slave_list)
-        
+        execute_reduce(slave_list)        
         reduce_duration  = time.perf_counter() - start_time
         print("REDUCE FINISHED... {:.2f} seconds".format(reduce_duration))
-        print("TOTAL DURATION: ", map_duration + shuffle_duration + reduce_duration)
+
+        start_time = time.perf_counter()
+        r = get_result(slave_list)
         r_file_name = "wordcount-parallel-"+args.input
         pd.Series(r).to_csv(r_file_name, header=None)
+        combine_duration = time.perf_counter() - start_time
+        print("COMBINE RESULTS... {} seconds".format(combine_duration))
+
+        print("TOTAL DURATION: ", map_duration + shuffle_duration + reduce_duration)
         print("RESULTS in file: {}".format(r_file_name))
         
         clean(slave_list)

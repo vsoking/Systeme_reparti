@@ -119,7 +119,7 @@ def reduce():
         out_f.write(words_count[0]+" "+str(words_count[1]) +'\n')
     out_f.close()
     """
-    return json.dumps(count_dict)
+    #return json.dumps(count_dict)
 
         
 
@@ -139,7 +139,7 @@ def main():
         shuffle(args.shuffle)
     elif args.reduce:
         if os.path.isdir("/tmp/vsoking-20/shufflesreceived"):
-            sys.stdout.write(reduce())
+            reduce()
         else:
             pass
     else:
